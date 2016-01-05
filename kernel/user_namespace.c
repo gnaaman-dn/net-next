@@ -23,6 +23,12 @@
 #include <linux/sort.h>
 
 static struct kmem_cache *user_ns_cachep __ro_after_init;
+/*
+ * sysctl determining whether unprivileged users may unshare a new
+ * userns.  Allowed by default
+ */
+int unprivileged_userns_clone = 1;
+
 static DEFINE_MUTEX(userns_state_mutex);
 
 static bool new_idmap_permitted(const struct file *file,
