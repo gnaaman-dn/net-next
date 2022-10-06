@@ -37,6 +37,7 @@
 #include <linux/pci.h>
 #include <linux/etherdevice.h>
 #include <linux/bpf.h>
+#include <linux/sort.h>
 
 #include <linux/uaccess.h>
 
@@ -6708,6 +6709,9 @@ static struct pernet_operations rtnetlink_net_ops = {
 	.exit = rtnetlink_net_exit,
 };
 
+static int bulk_del_rtnl_dellink(struct sk_buff *skb, struct nlmsghdr *nlh,
+				 struct netlink_ext_ack *extack);
+
 void __init rtnetlink_init(void)
 {
 	if (register_pernet_subsys(&rtnetlink_net_ops))
@@ -6719,7 +6723,7 @@ void __init rtnetlink_init(void)
 		      rtnl_dump_ifinfo, 0);
 	rtnl_register(PF_UNSPEC, RTM_SETLINK, rtnl_setlink, NULL, 0);
 	rtnl_register(PF_UNSPEC, RTM_NEWLINK, rtnl_newlink, NULL, 0);
-	rtnl_register(PF_UNSPEC, RTM_DELLINK, rtnl_dellink, NULL, 0);
+	rtnl_register(PF_UNSPEC, RTM_DELLINK, bulk_del_rtnl_dellink, NULL, 0);
 
 	rtnl_register(PF_UNSPEC, RTM_GETADDR, NULL, rtnl_dump_all, 0);
 	rtnl_register(PF_UNSPEC, RTM_GETROUTE, NULL, rtnl_dump_all, 0);
@@ -6746,10 +6750,6 @@ void __init rtnetlink_init(void)
 	rtnl_register(PF_BRIDGE, RTM_DELMDB, rtnl_mdb_del, NULL,
 		      RTNL_FLAG_BULK_DEL_SUPPORTED);
 }
-
-
-#include <linux/sort.h>
-#include <kpatch-macros.h>
 
 /** Piggyback on IFLA_PHYS_PORT_ID. Note that '.len' limit was removed */
 static const struct nla_policy bulk_del_ifla_policy[IFLA_MAX+1] = {
@@ -6955,17 +6955,3 @@ out:
 
 	return err;
 }
-
-static void bulk_del_cb_post_patch(patch_object *obj) {
-	/** This triggers a benign WARN_ON due to '->doit' changing.. Works fine though */
-	pr_info("IGNORE THIS WARNING:\n");
-	rtnl_register(PF_UNSPEC, RTM_DELLINK, bulk_del_rtnl_dellink, NULL, 0);
-}
-KPATCH_POST_PATCH_CALLBACK(bulk_del_cb_post_patch);
-
-static void bulk_del_cb_pre_unpatch(patch_object *obj) {
-	/** This triggers a benign WARN_ON due to '->doit' changing.. Works fine though */
-	pr_info("IGNORE THIS WARNING:\n");
-	rtnl_register(PF_UNSPEC, RTM_DELLINK, rtnl_dellink, NULL, 0);
-}
-KPATCH_PRE_UNPATCH_CALLBACK(bulk_del_cb_pre_unpatch);
