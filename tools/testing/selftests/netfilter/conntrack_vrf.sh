@@ -150,27 +150,11 @@ EOF
 # oifname is the vrf device.
 test_masquerade_vrf()
 {
-	local qdisc=$1
-
-	if [ "$qdisc" != "default" ]; then
-		tc -net $ns0 qdisc add dev tvrf root $qdisc
-	fi
-
 	ip netns exec $ns0 conntrack -F 2>/dev/null
 
 ip netns exec $ns0 nft -f - <<EOF
 flush ruleset
 table ip nat {
-	chain rawout {
-		type filter hook output priority raw;
-
-		oif tvrf ct state untracked counter
-	}
-	chain postrouting2 {
-		type filter hook postrouting priority mangle;
-
-		oif tvrf ct state untracked counter
-	}
 	chain postrouting {
 		type nat hook postrouting priority 0;
 		# NB: masquerade should always be combined with 'oif(name) bla',
@@ -187,17 +171,12 @@ EOF
 	fi
 
 	# must also check that nat table was evaluated on second (lower device) iteration.
-	ip netns exec $ns0 nft list table ip nat |grep -q 'counter packets 2' &&
-	ip netns exec $ns0 nft list table ip nat |grep -q 'untracked counter packets [1-9]'
+	ip netns exec $ns0 nft list table ip nat |grep -q 'counter packets 2'
 	if [ $? -eq 0 ]; then
-		echo "PASS: iperf3 connect with masquerade + sport rewrite on vrf device ($qdisc qdisc)"
+		echo "PASS: iperf3 connect with masquerade + sport rewrite on vrf device"
 	else
-		echo "FAIL: vrf rules have unexpected counter value"
+		echo "FAIL: vrf masq rule has unexpected counter value"
 		ret=1
-	fi
-
-	if [ "$qdisc" != "default" ]; then
-		tc -net $ns0 qdisc del dev tvrf root
 	fi
 }
 
@@ -234,8 +213,7 @@ EOF
 }
 
 test_ct_zone_in
-test_masquerade_vrf "default"
-test_masquerade_vrf "pfifo"
+test_masquerade_vrf
 test_masquerade_veth
 
 exit $ret
