@@ -108,6 +108,21 @@ struct netns_vrf {
 	struct ctl_table_header	*ctl_hdr;
 };
 
+static struct dn_vrf_sysctl_table {
+	struct ctl_table_header *sysctl_header;
+	struct ctl_table dn_vrf_vars[1 + 1];
+} dn_vrf_sysctl = {
+	.dn_vrf_vars = {
+		{
+			.procname	= "no_double_netfilter",
+			.maxlen		= sizeof(int),
+			.mode		= 0644,
+			.proc_handler	= proc_dointvec,
+		},
+		{ }
+	}
+};
+
 struct net_vrf {
 	struct rtable __rcu	*rth;
 	struct rt6_info	__rcu	*rt6;
@@ -118,6 +133,8 @@ struct net_vrf {
 
 	struct list_head	me_list;   /* entry in vrf_map_elem */
 	int			ifindex;
+	int			no_double_netfilter;
+	struct dn_vrf_sysctl_table	*dn_vrf_sysctl;
 };
 
 static void vrf_rx_stats(struct net_device *dev, int len)
@@ -602,6 +619,7 @@ static netdev_tx_t vrf_xmit(struct sk_buff *skb, struct net_device *dev)
 static void vrf_finish_direct(struct sk_buff *skb)
 {
 	struct net_device *vrf_dev = skb->dev;
+	struct net_vrf *vrf = netdev_priv(vrf_dev);
 
 	if (!list_empty(&vrf_dev->ptype_all) &&
 	    likely(skb_headroom(skb) >= ETH_HLEN)) {
@@ -617,7 +635,8 @@ static void vrf_finish_direct(struct sk_buff *skb)
 	}
 
 	/* reset skb device */
-	nf_reset_ct(skb);
+	if (!vrf->no_double_netfilter)
+		nf_reset_ct(skb);
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
@@ -1688,8 +1707,52 @@ static int vrf_validate(struct nlattr *tb[], struct nlattr *data[],
 	return 0;
 }
 
+static struct dn_vrf_sysctl_table *vrf_create_dn_vrf_proc(struct net_device* dev)
+{
+	struct net_vrf *vrf = netdev_priv(dev);
+	size_t i;
+	char path[sizeof("net/ipv4/conf/") + IFNAMSIZ];
+	struct dn_vrf_sysctl_table *t;
+	int err = 0;
+
+	err = -ENOMEM;
+	t = kmemdup(&dn_vrf_sysctl, sizeof(*t), GFP_KERNEL);
+	if (!t)
+		goto out;
+
+	for (i = 0; i < ARRAY_SIZE(t->dn_vrf_vars) - 1; i++)
+		t->dn_vrf_vars[i].extra1 = dev;
+
+	t->dn_vrf_vars[0].data = &vrf->no_double_netfilter;
+
+	/** lol this has nothing to do with ipv4, but w/e */
+	snprintf(path, sizeof(path), "net/ipv4/conf/%s", dev->name);
+
+	t->sysctl_header = register_net_sysctl(dev_net(dev), path, t->dn_vrf_vars);
+	if (!t->sysctl_header)
+		goto free_table;
+
+	return t;
+
+free_table:
+	kfree(t);
+
+out:
+	return ERR_PTR(err);
+}
+
+static void vrf_destroy_dn_vrf_proc(struct dn_vrf_sysctl_table *t)
+{
+	if (!t)
+		return;
+
+	unregister_net_sysctl_table(t->sysctl_header);
+	kfree(t);
+}
+
 static void vrf_dellink(struct net_device *dev, struct list_head *head)
 {
+	struct net_vrf *vrf = netdev_priv(dev);
 	struct net_device *port_dev;
 	struct list_head *iter;
 
@@ -1699,6 +1762,8 @@ static void vrf_dellink(struct net_device *dev, struct list_head *head)
 	vrf_map_unregister_dev(dev);
 
 	unregister_netdevice_queue(dev, head);
+
+	vrf_destroy_dn_vrf_proc(vrf->dn_vrf_sysctl);
 }
 
 static int vrf_newlink(struct net *src_net, struct net_device *dev,
@@ -1724,6 +1789,13 @@ static int vrf_newlink(struct net *src_net, struct net_device *dev,
 	}
 
 	dev->priv_flags |= IFF_L3MDEV_MASTER;
+
+	vrf->dn_vrf_sysctl = vrf_create_dn_vrf_proc(dev);
+	if (IS_ERR(vrf->dn_vrf_sysctl)) {
+		pr_err("Failed to allocate dn_vrf_sysctl proc\n");
+		err = PTR_ERR(vrf->dn_vrf_sysctl);
+		return err;
+	}
 
 	err = register_netdevice(dev);
 	if (err)
