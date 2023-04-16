@@ -3908,8 +3908,10 @@ restart:
 
 		addrconf_del_dad_work(ifa);
 
+		// Keep local address only if it won't be re-generated when the interface goes up
 		keep = keep_addr && (ifa->flags & IFA_F_PERMANENT) &&
-			!addr_is_local(&ifa->addr);
+			(idev->cnf.addr_gen_mode == IN6_ADDR_GEN_MODE_NONE ||
+			 !addr_is_local(&ifa->addr));
 
 		spin_lock_bh(&ifa->lock);
 
