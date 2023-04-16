@@ -2318,10 +2318,32 @@ void fib6_run_gc(unsigned long expires, struct net *net, bool force)
 
 	if (force) {
 		spin_lock_bh(&net->ipv6.fib6_gc_lock);
-	} else if (!spin_trylock_bh(&net->ipv6.fib6_gc_lock)) {
-		mod_timer(&net->ipv6.ip6_fib_timer, jiffies + HZ);
-		return;
+	} else {
+		/* If there is no timer - start it */
+		if (!atomic_cmpxchg(&net->ipv6.fib6_gc_timer_started, 0, 1)) {
+			mod_timer(&net->ipv6.ip6_fib_timer, jiffies + HZ);
+			return;
+		}
+
+		/* If the spinlock is taken - reset it */
+		if (!spin_trylock_bh(&net->ipv6.fib6_gc_lock)) {
+			mod_timer(&net->ipv6.ip6_fib_timer, jiffies + HZ);
+			return;
+		}
+
+		/* If the timer is pending - reset it */
+		if (timer_pending(&net->ipv6.ip6_fib_timer)) {
+			spin_unlock_bh(&net->ipv6.fib6_gc_lock);
+			mod_timer(&net->ipv6.ip6_fib_timer, jiffies + HZ);
+			return;
+		}
 	}
+
+	/* Timer will either be deleted or modified for a completion run (gc_args.more)
+	 * This means we ran GC and the non-force runs that were waiting have finished
+	 */
+	atomic_set(&net->ipv6.fib6_gc_timer_started, 0);
+
 	gc_args.timeout = expires ? (int)expires :
 			  net->ipv6.sysctl.ip6_rt_gc_interval;
 	gc_args.more = 0;
@@ -2363,6 +2385,7 @@ static int __net_init fib6_net_init(struct net *net)
 	rwlock_init(&net->ipv6.fib6_walker_lock);
 	INIT_LIST_HEAD(&net->ipv6.fib6_walkers);
 	timer_setup(&net->ipv6.ip6_fib_timer, fib6_gc_timer_cb, 0);
+	atomic_set(&net->ipv6.fib6_gc_timer_started, 0);
 
 	net->ipv6.rt6_stats = kzalloc(sizeof(*net->ipv6.rt6_stats), GFP_KERNEL);
 	if (!net->ipv6.rt6_stats)
