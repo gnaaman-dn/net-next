@@ -61,6 +61,7 @@
 #include <linux/dpll.h>
 
 #include "dev.h"
+#include <net/ip6_fib.h>
 
 #define RTNL_MAX_TYPE		50
 #define RTNL_SLAVE_MAX_TYPE	44
@@ -3212,7 +3213,11 @@ errout:
 	return err;
 }
 
-static int rtnl_group_dellink(const struct net *net, int group)
+// Used only under rtnl lock, so no need to be atomic
+// TODO(lahavs): Make this preety
+bool rt_amidst_group_dellink;
+
+static int rtnl_group_dellink(struct net *net, int group)
 {
 	struct net_device *dev, *aux;
 	LIST_HEAD(list_kill);
@@ -3235,6 +3240,7 @@ static int rtnl_group_dellink(const struct net *net, int group)
 	if (!found)
 		return -ENODEV;
 
+	rt_amidst_group_dellink = true;
 	for_each_netdev_safe(net, dev, aux) {
 		if (dev->group == group) {
 			const struct rtnl_link_ops *ops;
@@ -3244,6 +3250,10 @@ static int rtnl_group_dellink(const struct net *net, int group)
 		}
 	}
 	unregister_netdevice_many(&list_kill);
+	rt_amidst_group_dellink = false;
+
+	fib6_run_gc(0, net, false);
+	rt_genid_bump_ipv6(net);
 
 	return 0;
 }

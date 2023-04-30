@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- *	Linux INET6 implementation 
+ *	Linux INET6 implementation
  *
  *	Authors:
- *	Pedro Roque		<roque@di.fc.ul.pt>	
+ *	Pedro Roque		<roque@di.fc.ul.pt>
  */
 
 #ifndef _IP6_FIB_H
@@ -176,6 +176,8 @@ struct fib6_info {
 		struct list_head	nh_list;
 	};
 	unsigned int			fib6_nsiblings;
+
+	struct list_head		dev_list;
 
 	refcount_t			fib6_ref;
 	unsigned long			expires;

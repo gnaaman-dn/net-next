@@ -4748,34 +4748,45 @@ void rt6_multipath_rebalance(struct fib6_info *rt)
 	rt6_multipath_upper_bound_set(first, total);
 }
 
-static int fib6_ifup(struct fib6_info *rt, void *p_arg)
+void rt6_sync_up(struct net_device *dev, unsigned char nh_flags)
 {
-	const struct arg_netdev_event *arg = p_arg;
-	struct net *net = dev_net(arg->dev);
+	struct net *net = dev_net(dev);
+	struct list_head ipv6_routes_list;
+	struct list_head *pos, *next;
 
-	if (rt != net->ipv6.fib6_null_entry && !rt->nh &&
-	    rt->fib6_nh->fib_nh_dev == arg->dev) {
-		rt->fib6_nh->fib_nh_flags &= ~arg->nh_flags;
+
+	if (nh_flags & RTNH_F_DEAD && netif_carrier_ok(dev))
+		nh_flags |= RTNH_F_LINKDOWN;
+
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_replace_init(&dev->ipv6_routes, &ipv6_routes_list);
+	spin_unlock_bh(&dev->ipv6_routes_lock);
+
+	list_for_each_safe(pos, next, &ipv6_routes_list) {
+		struct fib6_info *rt = list_entry(pos, struct fib6_info, dev_list);
+
+		if (rt == net->ipv6.fib6_null_entry || rt->nh)
+			continue;
+
+		// Check for broken list
+		BUG_ON(rt->fib6_nh->fib_nh_dev != dev);
+
+		rt->fib6_nh->fib_nh_flags &= ~nh_flags;
+
+		/**
+		 * TODO(lahavs): These 2 functions can now change the same fib6_node multiple
+		 *   times.. It should be fine (although maybe redundant), but verify it.
+		 * Also note that even mainline impl can traverse same node twice, as the
+		 *   case for intermediate nodes
+		 */
 		fib6_update_sernum_upto_root(net, rt);
 		rt6_multipath_rebalance(rt);
 	}
 
-	return 0;
-}
-
-void rt6_sync_up(struct net_device *dev, unsigned char nh_flags)
-{
-	struct arg_netdev_event arg = {
-		.dev = dev,
-		{
-			.nh_flags = nh_flags,
-		},
-	};
-
-	if (nh_flags & RTNH_F_DEAD && netif_carrier_ok(dev))
-		arg.nh_flags |= RTNH_F_LINKDOWN;
-
-	fib6_clean_all(dev_net(dev), fib6_ifup, &arg);
+	// New routes could have been added to the device's list, so splice
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_splice_tail(&ipv6_routes_list, &dev->ipv6_routes);
+	spin_unlock_bh(&dev->ipv6_routes_lock);
 }
 
 /* only called for fib entries with inline fib6_nh */
@@ -4876,6 +4887,68 @@ static int fib6_ifdown(struct fib6_info *rt, void *p_arg)
 	return 0;
 }
 
+static int fib6_del_safe(struct fib6_info *rt, struct nl_info *info)
+{
+	int res;
+	struct fib6_table *table = rt->fib6_table;
+	struct net_device *dev = rt->fib6_nh->fib_nh_dev;
+
+	// TODO(lahavs): Really needed? Now that routes are added to dev's list in
+	//   'fib6_add()' instead of 'ip6_route_info_create()', fib6_del()
+	//   shouldn't fail due to routes missing fib6_node.
+#if 0
+	// 'fib6_del()' can potentially fail. Make sure we always unlink.
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_del_init(&rt->dev_list);
+	spin_unlock_bh(&dev->ipv6_routes_lock);
+#endif
+
+	spin_lock_bh(&table->tb6_lock);
+	res = fib6_del(rt, info);
+	spin_unlock_bh(&table->tb6_lock);
+
+	if (res) {
+		pr_err("%s failed to delete route for device %s\n",
+		       __func__,
+		       dev->name);
+	}
+
+	return res;
+}
+
+static struct list_head *rt6_multipath_free(struct fib6_info *rt, struct nl_info *info)
+{
+#if 0
+	struct list_head *next = rt->dev_list.next;
+
+	struct fib6_info *iter, *next_iter;
+
+	list_for_each_entry_safe(iter, next_iter, &rt->fib6_siblings, fib6_siblings) {
+		if (&iter->dev_list == next)
+			next = next->next;
+
+		fib6_del_safe(iter, info);
+	}
+
+	if (next == &rt->dev_list)
+		next = next->next;
+	fib6_del_safe(rt, info);
+
+	return next;
+#else
+	struct list_head *next;
+	struct fib6_info *iter, *next_iter;
+
+	list_for_each_entry_safe(iter, next_iter, &rt->fib6_siblings, fib6_siblings)
+		fib6_del_safe(iter, info);
+
+	next = rt->dev_list.next;
+	fib6_del_safe(rt, info);
+
+	return next;
+#endif
+}
+
 void rt6_sync_down_dev(struct net_device *dev, unsigned long event)
 {
 	struct arg_netdev_event arg = {
@@ -4885,6 +4958,93 @@ void rt6_sync_down_dev(struct net_device *dev, unsigned long event)
 		},
 	};
 	struct net *net = dev_net(dev);
+
+	struct nl_info info = {
+		.nl_net = net,
+		.skip_notify = net->ipv6.sysctl.skip_notify_on_dev_down,
+	};
+
+/** V2 - More fine-grained locking */
+#define __DN_V2_FIX
+
+#ifdef __DN_V2_FIX
+	struct list_head ipv6_routes_list;
+	struct list_head *pos, *next;
+
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_replace_init(&dev->ipv6_routes, &ipv6_routes_list);
+	spin_unlock_bh(&dev->ipv6_routes_lock);
+
+	list_for_each_safe(pos, next, &ipv6_routes_list) {
+		struct fib6_info *rt = list_entry(pos, struct fib6_info, dev_list);
+#else
+#error THIS IS BAD - WILL DEADLOCK WITH fib6_info_destroy_rcu() that might lock..
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_for_each_entry_safe(rt, next, &dev->ipv6_routes, dev_list) {
+#endif
+		unsigned int count;
+
+		if (rt == net->ipv6.fib6_null_entry || rt->nh)
+			continue;
+
+		// Check for broken list
+		BUG_ON(rt->fib6_nh->fib_nh_dev != dev);
+
+		switch (event) {
+		case NETDEV_UNREGISTER:
+			fib6_del_safe(rt, &info);
+			break;
+		case NETDEV_DOWN:
+			// TODO(lahavs): Note that 'should_flush' is no longer in use
+			if (!rt->fib6_nsiblings) {
+				fib6_del_safe(rt, &info);
+				break;
+			}
+
+			// NOTE: rt6_multipath_uses_dev(rt, dev) will always be TRUE
+
+			count = rt6_multipath_dead_count(rt, dev);
+			if (rt->fib6_nsiblings + 1 == count) {
+				next = rt6_multipath_free(rt, &info);
+				break;
+			}
+			rt->fib6_nh->fib_nh_flags |= (RTNH_F_DEAD | RTNH_F_LINKDOWN);
+			/**
+			 * No need for 'rt6_multipath_nh_flags_set()', we'll iterate
+			 * over all the routes belonging to this ECMP route anywho
+			 */
+			fib6_update_sernum(net, rt);
+			/**
+			 * TODO(lahavs): This now will be called multiple times, once
+			 *   for ECMP nexthop that uses that device (was fixed there
+			 *   by 'return -2')...
+			 * Only viable solution is to make nexthops of same ECMP route
+			 *   in 'dev->ipv6_routes' one after the other, then can just
+			 *   take here the route next to the liast sibling that uses
+			 *   this device.
+			 * If that happens, restore 'rt6_multipath_nh_flags_set()'
+			 *  above.
+			 */
+			rt6_multipath_rebalance(rt);
+			break;
+
+		case NETDEV_CHANGE:
+			if (rt->fib6_flags & (RTF_LOCAL | RTF_ANYCAST))
+				break;
+			rt->fib6_nh->fib_nh_flags |= RTNH_F_LINKDOWN;
+			rt6_multipath_rebalance(rt);
+			break;
+		}
+	}
+#ifdef __DN_V2_FIX
+	// New routes could have been added to the device's list, so splice
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_splice_tail(&ipv6_routes_list, &dev->ipv6_routes);
+	spin_unlock_bh(&dev->ipv6_routes_lock);
+#else
+	spin_unlock_bh(&dev->ipv6_routes_lock);
+#endif
+	return;
 
 	if (net->ipv6.sysctl.skip_notify_on_dev_down)
 		fib6_clean_all_skip_notify(net, fib6_ifdown, &arg);
@@ -4967,6 +5127,42 @@ void rt6_mtu_change(struct net_device *dev, unsigned int mtu)
 	};
 
 	fib6_clean_all(dev_net(dev), rt6_mtu_change_route, &arg);
+
+	/**
+	 * TODO(lahavs):
+	 * This doesn't work for nexthop object groups..
+	 * Say have these nexthops:
+	 * 1) ID 100 dev lo0
+	 * 2) ID 200 dev lo1
+	 * 3) ID 300 group 100/200
+	 *
+	 * And a route that uses ID 300
+	 *
+	 * 'fib6_add()' can only add that route to a single device's list (adding
+	 *   to more *might* work, but need to think about it). Specifically
+	 *   'fib6_info_nh_dev()' chooses the first nexthop in that group (lo0).
+	 * Meaning, if lo1 changes its MTU then here we wouldn't iterate over
+	 *   that route..
+	 */
+#if 0
+	struct list_head ipv6_routes_list;
+	struct list_head *pos, *next;
+
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_replace_init(&dev->ipv6_routes, &ipv6_routes_list);
+	spin_unlock_bh(&dev->ipv6_routes_lock);
+
+	list_for_each_safe(pos, next, &ipv6_routes_list) {
+		struct fib6_info *rt = list_entry(pos, struct fib6_info, dev_list);
+
+		rt6_mtu_change_route(rt, &arg); // Can't fail
+	}
+
+	// New routes could have been added to the device's list, so splice
+	spin_lock_bh(&dev->ipv6_routes_lock);
+	list_splice_tail(&ipv6_routes_list, &dev->ipv6_routes);
+	spin_unlock_bh(&dev->ipv6_routes_lock);
+#endif
 }
 
 static const struct nla_policy rtm_ipv6_policy[RTA_MAX+1] = {

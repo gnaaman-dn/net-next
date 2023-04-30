@@ -6201,6 +6201,8 @@ errout:
 		rtnl_set_sk_err(net, RTNLGRP_IPV6_PREFIX, err);
 }
 
+extern bool rt_amidst_group_dellink;
+
 static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
 {
 	struct net *net = dev_net(ifp->idev->dev);
@@ -6251,7 +6253,8 @@ static void __ipv6_ifa_notify(int event, struct inet6_ifaddr *ifp)
 			ip6_del_rt(net, ifp->rt, false);
 			ifp->rt = NULL;
 		}
-		rt_genid_bump_ipv6(net);
+		if (!rt_amidst_group_dellink)
+			rt_genid_bump_ipv6(net);
 		break;
 	}
 	atomic_inc(&net->ipv6.dev_addr_genid);

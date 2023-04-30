@@ -159,6 +159,7 @@ struct fib6_info *fib6_info_alloc(gfp_t gfp_flags, bool with_fib6_nh)
 	/* fib6_siblings is a union with nh_list, so this initializes both */
 	INIT_LIST_HEAD(&f6i->fib6_siblings);
 	refcount_set(&f6i->fib6_ref, 1);
+	INIT_LIST_HEAD(&f6i->dev_list); // So 'fib6_info_destroy_rcu()' will be happy
 
 	return f6i;
 }
@@ -1035,6 +1036,16 @@ static void fib6_purge_rt(struct fib6_info *rt, struct fib6_node *fn,
 	if (rt->nh && !list_empty(&rt->nh_list))
 		list_del_init(&rt->nh_list);
 
+	if (!rt->nh) {
+		struct net_device *dev = rt->fib6_nh->fib_nh_dev;
+
+		if (dev) {
+			spin_lock_bh(&dev->ipv6_routes_lock);
+			list_del_init(&rt->dev_list);
+			spin_unlock_bh(&dev->ipv6_routes_lock);
+		}
+	}
+
 	if (refcount_read(&rt->fib6_ref) != 1) {
 		/* This route is used as dummy address holder in some split
 		 * nodes. It is not leaked, but it still holds other resources,
@@ -1479,6 +1490,30 @@ int fib6_add(struct fib6_node *root, struct fib6_info *rt,
 
 	err = fib6_add_rt2node(fn, rt, info, extack);
 	if (!err) {
+		/**
+		 * TODO(lahavs): Check 'rt6_mtu_change()' as to why we wanted to
+		 *   use 'fib6_info_nh_dev()'..
+		 */
+#if 0
+		struct net_device *dev = fib6_info_nh_dev(rt);
+
+		if (dev) {
+			spin_lock_bh(&dev->ipv6_routes_lock);
+			list_add_tail(&rt->dev_list, &dev->ipv6_routes);
+			spin_unlock_bh(&dev->ipv6_routes_lock);
+		}
+#else
+		if (!rt->nh && rt->fib6_nh->fib_nh_dev) {
+			struct net_device *dev = rt->fib6_nh->fib_nh_dev;
+
+			if (dev) {
+				spin_lock_bh(&dev->ipv6_routes_lock);
+				list_add_tail(&rt->dev_list, &dev->ipv6_routes);
+				spin_unlock_bh(&dev->ipv6_routes_lock);
+			}
+		}
+#endif
+
 		if (rt->nh)
 			list_add(&rt->nh_list, &rt->nh->f6i_list);
 		__fib6_update_sernum_upto_root(rt, fib6_new_sernum(info->nl_net));

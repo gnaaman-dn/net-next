@@ -2197,6 +2197,10 @@ struct net_device {
 	struct list_head	close_list;
 	struct list_head	ptype_all;
 
+	struct list_head	ipv6_routes;
+	/* Lock when using ipv6_routs list */
+	spinlock_t		ipv6_routes_lock;
+
 	struct {
 		struct list_head upper;
 		struct list_head lower;
