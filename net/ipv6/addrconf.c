@@ -4323,8 +4323,41 @@ static void addrconf_dad_completed(struct inet6_ifaddr *ifp, bool bump_id,
 		write_unlock_bh(&ifp->idev->lock);
 	}
 
-	if (bump_id)
-		rt_genid_bump_ipv6(dev_net(dev));
+	struct net *net = dev_net(dev);
+	struct list_head ipv6_routes_list;
+	struct list_head *pos, *next;
+
+	if (bump_id) {
+		spin_lock_bh(&dev->ipv6_routes_lock);
+		list_replace_init(&dev->ipv6_routes, &ipv6_routes_list);
+		spin_unlock_bh(&dev->ipv6_routes_lock);
+
+		list_for_each_safe(pos, next, &ipv6_routes_list) {
+			struct fib6_info *rt = list_entry(pos, struct fib6_info, dev_list);
+
+			if (rt == net->ipv6.fib6_null_entry || rt->nh)
+				continue;
+
+			// Check for broken list
+			BUG_ON(rt->fib6_nh->fib_nh_dev != dev);
+
+			/**
+			* TODO(lahavs): These 2 functions can now change the same fib6_node multiple
+			*   times.. It should be fine (although maybe redundant), but verify it.
+			* Also note that even mainline impl can traverse same node twice, as the
+			*   case for intermediate nodes
+			*/
+			fib6_update_sernum_upto_root(net, rt);
+			rt6_multipath_rebalance(rt);
+		}
+
+		// New routes could have been added to the device's list, so splice
+		spin_lock_bh(&dev->ipv6_routes_lock);
+		list_splice_tail(&ipv6_routes_list, &dev->ipv6_routes);
+		spin_unlock_bh(&dev->ipv6_routes_lock);
+	}
+	// if (bump_id)
+	// 	rt_genid_bump_ipv6(dev_net(dev));
 
 	/* Make sure that a new temporary address will be created
 	 * before this temporary address becomes deprecated.
