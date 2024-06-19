@@ -16,7 +16,7 @@
 #define NETLINK_SELINUX		7	/* SELinux event notifications */
 #define NETLINK_ISCSI		8	/* Open-iSCSI */
 #define NETLINK_AUDIT		9	/* auditing */
-#define NETLINK_FIB_LOOKUP	10	
+#define NETLINK_FIB_LOOKUP	10
 #define NETLINK_CONNECTOR	11
 #define NETLINK_NETFILTER	12	/* netfilter subsystem */
 #define NETLINK_IP6_FW		13
@@ -32,7 +32,7 @@
 
 #define NETLINK_INET_DIAG	NETLINK_SOCK_DIAG
 
-#define MAX_LINKS 32		
+#define MAX_LINKS 32
 
 struct sockaddr_nl {
 	__kernel_sa_family_t	nl_family;	/* AF_NETLINK	*/
@@ -76,6 +76,9 @@ struct nlmsghdr {
 /* Flags for ACK message */
 #define NLM_F_CAPPED	0x100	/* request was capped */
 #define NLM_F_ACK_TLVS	0x200	/* extended ACK TVLs were included */
+
+/* Custom flags at the end */
+#define NLM_F_TRY_LOCK	0x8000
 
 /*
    4.4BSD ADD		NLM_F_CREATE|NLM_F_EXCL

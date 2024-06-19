@@ -6531,6 +6531,7 @@ static int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 	unsigned int flags;
 	int family;
 	int type;
+	int trylock_retry = 10;
 
 	type = nlh->nlmsg_type;
 	if (type > RTM_MAX)
@@ -6622,7 +6623,19 @@ static int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 	rcu_read_unlock();
 
-	rtnl_lock();
+	if (nlh->nlmsg_flags&NLM_F_TRY_LOCK) {
+
+		while (trylock_retry > 0 && !rtnl_trylock()) {
+			msleep(20);
+			trylock_retry--;
+		}
+		if (trylock_retry == 0) {
+			return -EAGAIN;
+		}
+
+	} else {
+		rtnl_lock();
+	}
 	link = rtnl_get_link(family, type);
 	if (link && link->doit)
 		err = link->doit(skb, nlh, extack);
