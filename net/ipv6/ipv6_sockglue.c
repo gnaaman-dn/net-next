@@ -398,7 +398,9 @@ int do_ipv6_setsockopt(struct sock *sk, int level, int optname,
 	struct net *net = sock_net(sk);
 	int val, valbool;
 	int retv = -ENOPROTOOPT;
+	int trylock_retry = 10;
 	bool needs_rtnl = setsockopt_needs_rtnl(optname);
+	bool uses_trylock = sock_flag(sk, SOCK_DONTBLOCK);
 
 	if (sockptr_is_null(optval))
 		val = 0;
@@ -563,8 +565,17 @@ int do_ipv6_setsockopt(struct sock *sk, int level, int optname,
 		return 0;
 	}
 	}
-	if (needs_rtnl)
-		rtnl_lock();
+	if (needs_rtnl) {
+		if (uses_trylock) {
+			while (trylock_retry > 0 && !rtnl_trylock()) {
+				msleep(20);
+				trylock_retry--;
+			}
+			if (trylock_retry == 0)
+				return -EAGAIN;
+		} else
+			rtnl_lock();
+	}
 	sockopt_lock_sock(sk);
 
 	/* Another thread has converted the socket into IPv4 with

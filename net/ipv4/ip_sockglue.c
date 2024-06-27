@@ -895,7 +895,9 @@ int do_ip_setsockopt(struct sock *sk, int level, int optname,
 	struct inet_sock *inet = inet_sk(sk);
 	struct net *net = sock_net(sk);
 	int val = 0, err;
+	int trylock_retry = 10;
 	bool needs_rtnl = setsockopt_needs_rtnl(optname);
+	bool uses_trylock = sock_flag(sk, SOCK_DONTBLOCK);
 
 	switch (optname) {
 	case IP_PKTINFO:
@@ -1069,8 +1071,17 @@ int do_ip_setsockopt(struct sock *sk, int level, int optname,
 	}
 
 	err = 0;
-	if (needs_rtnl)
-		rtnl_lock();
+	if (needs_rtnl) {
+		if (uses_trylock) {
+			while (trylock_retry > 0 && !rtnl_trylock()) {
+				msleep(20);
+				trylock_retry--;
+			}
+			if (trylock_retry == 0)
+				return -EAGAIN;
+		} else
+			rtnl_lock();
+	}
 	sockopt_lock_sock(sk);
 
 	switch (optname) {

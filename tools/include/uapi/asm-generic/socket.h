@@ -123,6 +123,7 @@
 
 #define SO_PASSPIDFD		76
 #define SO_PEERPIDFD		77
+#define SO_DONTBLOCK        100
 
 #if !defined(__KERNEL__)
 

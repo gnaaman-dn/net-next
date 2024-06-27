@@ -1534,6 +1534,9 @@ set_sndbuf:
 			ret = sock_reserve_memory(sk, delta);
 		break;
 	}
+	case SO_DONTBLOCK:
+		sock_valbool_flag(sk, SOCK_DONTBLOCK, valbool);
+		break;
 
 	default:
 		ret = -ENOPROTOOPT;
