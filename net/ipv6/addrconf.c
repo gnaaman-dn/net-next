@@ -310,6 +310,16 @@ static inline bool addrconf_link_ready(const struct net_device *dev)
 	return netif_oper_up(dev) && !qdisc_tx_is_noop(dev);
 }
 
+static bool addrconf_perishable(int ifa_flags, u32 prefered_lft)
+{
+	/* When setting preferred_lft to a value not zero or
+	 * infinity, while valid_lft is infinity
+	 * IFA_F_PERMANENT has a non-infinity life time.
+	 */
+	return !((ifa_flags & IFA_F_PERMANENT) &&
+		 (prefered_lft == INFINITY_LIFE_TIME));
+}
+
 static void addrconf_del_rs_timer(struct inet6_dev *idev)
 {
 	if (del_timer(&idev->rs_timer))
@@ -3100,7 +3110,14 @@ static int inet6_addr_add(struct net *net, int ifindex,
 			manage_tempaddrs(idev, ifp, cfg->valid_lft,
 					 cfg->preferred_lft, true, jiffies);
 		in6_ifa_put(ifp);
-		addrconf_verify_rtnl(net);
+
+		/* Verify only if it's possible that adding this address
+		 * may modify the worker expiration time.
+		 */
+		if ((cfg->ifa_flags & IFA_F_MANAGETEMPADDR) ||
+		    addrconf_perishable(cfg->ifa_flags, cfg->preferred_lft))
+			addrconf_verify_rtnl(net);
+
 		return 0;
 	} else if (cfg->ifa_flags & IFA_F_MCAUTOJOIN) {
 		ipv6_mc_config(net->ipv6.mc_autojoin_sk, false,
@@ -3148,7 +3165,6 @@ static int inet6_addr_del(struct net *net, int ifindex, u32 ifa_flags,
 			    (ifp->flags & IFA_F_MANAGETEMPADDR))
 				delete_tempaddrs(idev, ifp);
 
-			addrconf_verify_rtnl(net);
 			if (ipv6_addr_is_multicast(pfx)) {
 				ipv6_mc_config(net->ipv6.mc_autojoin_sk,
 					       false, pfx, dev->ifindex);
@@ -4645,12 +4661,7 @@ restart:
 		hlist_for_each_entry_rcu_bh(ifp, &net->ipv6.inet6_addr_lst[i], addr_lst) {
 			unsigned long age;
 
-			/* When setting preferred_lft to a value not zero or
-			 * infinity, while valid_lft is infinity
-			 * IFA_F_PERMANENT has a non-infinity life time.
-			 */
-			if ((ifp->flags & IFA_F_PERMANENT) &&
-			    (ifp->prefered_lft == INFINITY_LIFE_TIME))
+			if (!addrconf_perishable(ifp->flags, ifp->prefered_lft))
 				continue;
 
 			spin_lock(&ifp->lock);
@@ -4980,7 +4991,9 @@ static int inet6_addr_modify(struct net *net, struct inet6_ifaddr *ifp,
 					 jiffies);
 	}
 
-	addrconf_verify_rtnl(net);
+	if (was_managetempaddr ||
+	    addrconf_perishable(cfg->ifa_flags, cfg->preferred_lft))
+		addrconf_verify_rtnl(net);
 
 	return 0;
 }
