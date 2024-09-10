@@ -6970,7 +6970,7 @@ static int bulk_del_rtnl_dellink(struct sk_buff *skb, struct nlmsghdr *nlh,
 		goto out;
 	}
 
-	err = rtnl_delete_link(dev);
+	err = rtnl_delete_link(dev, 0, NULL);
 
 out:
 	if (netnsid >= 0)

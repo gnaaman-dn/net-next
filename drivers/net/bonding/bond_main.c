@@ -2929,7 +2929,7 @@ static bool bond_handle_vlan(struct slave *slave, struct bond_vlan_tag *tags,
 	return true;
 }
 
-tatic struct sk_buff *new_arp_create(int type, int ptype, __be32 dest_ip,
+static struct sk_buff *new_arp_create(int type, int ptype, __be32 dest_ip,
 			       	      struct net_device *dev, __be32 src_ip,
 			       	      const unsigned char *dest_hw,
 			       	      const unsigned char *src_hw,
@@ -3052,11 +3052,35 @@ static void bond_arp_send(struct slave *slave, int arp_op, __be32 dest_ip,
 
 /* Validate the device path between the @start_dev and the @end_dev.
  * The path is valid if the @end_dev is reachable through device
+ * stacking.
  * When the path is validated, collect any vlan information in the
  * path.
  */
 struct bond_vlan_tag *bond_verify_device_path(struct net_device *start_dev,
 					      struct net_device *end_dev,
+					      int level)
+{
+	struct bond_vlan_tag *tags;
+	struct net_device *upper;
+	struct list_head  *iter;
+
+	if (start_dev == end_dev) {
+		tags = kcalloc(level + 1, sizeof(*tags), GFP_ATOMIC);
+		if (!tags)
+			return ERR_PTR(-ENOMEM);
+		tags[level].vlan_proto = BOND_VLAN_PROTO_NONE;
+		return tags;
+	}
+
+	netdev_for_each_upper_dev_rcu(start_dev, upper, iter) {
+		tags = bond_verify_device_path(upper, end_dev, level + 1);
+		if (IS_ERR_OR_NULL(tags)) {
+			if (IS_ERR(tags))
+				return tags;
+			continue;
+		}
+		if (is_vlan_dev(upper)) {
+			tags[level].vlan_proto = vlan_dev_vlan_proto(upper);
 			tags[level].vlan_id = vlan_dev_vlan_id(upper);
 		}
 
