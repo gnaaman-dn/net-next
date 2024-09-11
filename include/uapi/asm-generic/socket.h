@@ -134,7 +134,10 @@
 
 #define SO_PASSPIDFD		76
 #define SO_PEERPIDFD		77
-#define SO_DONTBLOCK        100
+
+#define SO_DONTBLOCK		100
+#define SO_DONTBLOCK_RETRIES		101
+#define SO_DONTBLOCK_RETRY_SLEEP		102
 
 #if !defined(__KERNEL__)
 

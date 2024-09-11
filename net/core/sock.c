@@ -1538,6 +1538,22 @@ set_sndbuf:
 		sock_valbool_flag(sk, SOCK_DONTBLOCK, valbool);
 		break;
 
+	case SO_DONTBLOCK_RETRIES:
+		if (val < 0 || val > 255) {
+			ret = -EINVAL;
+			break;
+		}
+		sk->sk_dontblock_retries = val;
+		break;
+
+	case SO_DONTBLOCK_RETRY_SLEEP:
+		if (val < 0 || val > 255) {
+			ret = -EINVAL;
+			break;
+		}
+		sk->sk_dontblock_retry_sleep = val;
+		break;
+
 	default:
 		ret = -ENOPROTOOPT;
 		break;
@@ -3499,6 +3515,9 @@ void sock_init_data_uid(struct socket *sock, struct sock *sk, kuid_t uid)
 	sk->sk_pacing_rate = ~0UL;
 	WRITE_ONCE(sk->sk_pacing_shift, 10);
 	sk->sk_incoming_cpu = -1;
+
+	sk->sk_dontblock_retries = 10;
+	sk->sk_dontblock_retry_sleep = 20;
 
 	sk_rx_queue_clear(sk);
 	/*

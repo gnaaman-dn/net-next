@@ -3666,8 +3666,20 @@ static int packet_mc_add(struct sock *sk, struct packet_mreq_max *mreq)
 	struct packet_mclist *ml, *i;
 	struct net_device *dev;
 	int err;
+	int trylock_retries = sk->sk_dontblock_retries;
+	int trylock_retry_sleep = sk->sk_dontblock_retry_sleep;
+	bool uses_trylock = sock_flag(sk, SOCK_DONTBLOCK);
 
-	rtnl_lock();
+	if (uses_trylock) {
+		while (trylock_retries > 0 && !rtnl_trylock()) {
+			trylock_retries--;
+			if (trylock_retries == 0)
+				return -EAGAIN;
+			else
+				msleep(trylock_retry_sleep);
+		}
+	} else
+		rtnl_lock();
 
 	err = -ENODEV;
 	dev = __dev_get_by_index(sock_net(sk), mreq->mr_ifindex);
@@ -3719,7 +3731,20 @@ static int packet_mc_drop(struct sock *sk, struct packet_mreq_max *mreq)
 {
 	struct packet_mclist *ml, **mlp;
 
-	rtnl_lock();
+	int trylock_retries = sk->sk_dontblock_retries;
+	int trylock_retry_sleep = sk->sk_dontblock_retry_sleep;
+	bool uses_trylock = sock_flag(sk, SOCK_DONTBLOCK);
+
+	if (uses_trylock) {
+		while (trylock_retries > 0 && !rtnl_trylock()) {
+			trylock_retries--;
+			if (trylock_retries == 0)
+				return -EAGAIN;
+			else
+				msleep(trylock_retry_sleep);
+		}
+	} else
+		rtnl_lock();
 
 	for (mlp = &pkt_sk(sk)->mclist; (ml = *mlp) != NULL; mlp = &ml->next) {
 		if (ml->ifindex == mreq->mr_ifindex &&

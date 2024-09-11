@@ -895,8 +895,9 @@ int do_ip_setsockopt(struct sock *sk, int level, int optname,
 	struct inet_sock *inet = inet_sk(sk);
 	struct net *net = sock_net(sk);
 	int val = 0, err;
-	int trylock_retry = 10;
 	bool needs_rtnl = setsockopt_needs_rtnl(optname);
+	int trylock_retries = sk->sk_dontblock_retries;
+	int trylock_retry_sleep = sk->sk_dontblock_retry_sleep;
 	bool uses_trylock = sock_flag(sk, SOCK_DONTBLOCK);
 
 	switch (optname) {
@@ -1073,12 +1074,13 @@ int do_ip_setsockopt(struct sock *sk, int level, int optname,
 	err = 0;
 	if (needs_rtnl) {
 		if (uses_trylock) {
-			while (trylock_retry > 0 && !rtnl_trylock()) {
-				msleep(20);
-				trylock_retry--;
+			while (trylock_retries > 0 && !rtnl_trylock()) {
+				trylock_retries--;
+				if (trylock_retries == 0)
+					return -EAGAIN;
+				else
+					msleep(trylock_retry_sleep);
 			}
-			if (trylock_retry == 0)
-				return -EAGAIN;
 		} else
 			rtnl_lock();
 	}

@@ -398,8 +398,9 @@ int do_ipv6_setsockopt(struct sock *sk, int level, int optname,
 	struct net *net = sock_net(sk);
 	int val, valbool;
 	int retv = -ENOPROTOOPT;
-	int trylock_retry = 10;
 	bool needs_rtnl = setsockopt_needs_rtnl(optname);
+	int trylock_retries = sk->sk_dontblock_retries;
+	int trylock_retry_sleep = sk->sk_dontblock_retry_sleep;
 	bool uses_trylock = sock_flag(sk, SOCK_DONTBLOCK);
 
 	if (sockptr_is_null(optval))
@@ -567,12 +568,13 @@ int do_ipv6_setsockopt(struct sock *sk, int level, int optname,
 	}
 	if (needs_rtnl) {
 		if (uses_trylock) {
-			while (trylock_retry > 0 && !rtnl_trylock()) {
-				msleep(20);
-				trylock_retry--;
+			while (trylock_retries > 0 && !rtnl_trylock()) {
+				trylock_retries--;
+				if (trylock_retries == 0)
+					return -EAGAIN;
+				else
+					msleep(trylock_retry_sleep);
 			}
-			if (trylock_retry == 0)
-				return -EAGAIN;
 		} else
 			rtnl_lock();
 	}

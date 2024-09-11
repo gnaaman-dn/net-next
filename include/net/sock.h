@@ -496,6 +496,8 @@ struct sock {
 	atomic_t		sk_zckey;
 	u32			sk_tsflags;
 	u8			sk_shutdown;
+	u8			sk_dontblock_retries;
+	u8			sk_dontblock_retry_sleep;
 
 	u8			sk_clockid;
 	u8			sk_txtime_deadline_mode : 1,
