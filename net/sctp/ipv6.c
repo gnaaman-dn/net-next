@@ -66,6 +66,10 @@ static void sctp_v6_to_addr(union sctp_addr *addr, struct in6_addr *saddr,
 static int sctp_v6_cmp_addr(const union sctp_addr *addr1,
 			    const union sctp_addr *addr2);
 
+static inline u32 hash_sctp_sockaddr_entry_ipv6(struct in6_addr *address, int ifindex) {
+	return hash_32(ipv6_addr_hash(address) ^ ifindex, SCTP_ADDR_HSIZE_SHIFT);
+}
+
 /* Event handler for inet6 address addition/deletion events.
  * The sctp_local_addr_list needs to be protocted by a spin lock since
  * multiple notifiers (say IPv4 and IPv6) may be running at the same
@@ -80,6 +84,9 @@ static int sctp_inet6addr_event(struct notifier_block *this, unsigned long ev,
 	struct sctp_sockaddr_entry *temp;
 	struct net *net = dev_net(ifa->idev->dev);
 	int found = 0;
+	u32 h;
+
+	h = hash_sctp_sockaddr_entry_ipv6(&ifa->addr, ifa->idev->dev->ifindex);
 
 	switch (ev) {
 	case NETDEV_UP:
@@ -90,7 +97,7 @@ static int sctp_inet6addr_event(struct notifier_block *this, unsigned long ev,
 			addr->a.v6.sin6_scope_id = ifa->idev->dev->ifindex;
 			addr->valid = 1;
 			spin_lock_bh(&net->sctp.local_addr_lock);
-			list_add_tail_rcu(&addr->list, &net->sctp.local_addr_list);
+			list_add_tail_rcu(&addr->list, &net->sctp.local_addr_list[h]);
 			sctp_addr_wq_mgmt(net, addr, SCTP_ADDR_NEW);
 			spin_unlock_bh(&net->sctp.local_addr_lock);
 		}
@@ -98,7 +105,7 @@ static int sctp_inet6addr_event(struct notifier_block *this, unsigned long ev,
 	case NETDEV_DOWN:
 		spin_lock_bh(&net->sctp.local_addr_lock);
 		list_for_each_entry_safe(addr, temp,
-					&net->sctp.local_addr_list, list) {
+					&net->sctp.local_addr_list[h], list) {
 			if (addr->a.sa.sa_family == AF_INET6 &&
 			    ipv6_addr_equal(&addr->a.v6.sin6_addr,
 					    &ifa->addr) &&
@@ -457,9 +464,10 @@ static void sctp_v6_get_saddr(struct sctp_sock *sk,
 static void sctp_v6_copy_addrlist(struct list_head *addrlist,
 				  struct net_device *dev)
 {
+	struct sctp_sockaddr_entry *addr;
 	struct inet6_dev *in6_dev;
 	struct inet6_ifaddr *ifp;
-	struct sctp_sockaddr_entry *addr;
+	u32 h;
 
 	rcu_read_lock();
 	if ((in6_dev = __in6_dev_get(dev)) == NULL) {
@@ -472,12 +480,13 @@ static void sctp_v6_copy_addrlist(struct list_head *addrlist,
 		/* Add the address to the local list.  */
 		addr = kzalloc(sizeof(*addr), GFP_ATOMIC);
 		if (addr) {
+			h = hash_sctp_sockaddr_entry_ipv6(&ifp->addr, dev->ifindex);
 			addr->a.v6.sin6_family = AF_INET6;
 			addr->a.v6.sin6_addr = ifp->addr;
 			addr->a.v6.sin6_scope_id = dev->ifindex;
 			addr->valid = 1;
 			INIT_LIST_HEAD(&addr->list);
-			list_add_tail(&addr->list, addrlist);
+			list_add_tail(&addr->list, &addrlist[h]);
 		}
 	}
 

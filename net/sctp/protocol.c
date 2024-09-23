@@ -65,15 +65,20 @@ long sysctl_sctp_mem[3];
 int sysctl_sctp_rmem[3];
 int sysctl_sctp_wmem[3];
 
+static inline u32 hash_sctp_sockaddr_entry_ipv4(u32 address, int ifindex) {
+	return hash_32(ipv4_addr_hash(address) ^ ifindex, SCTP_ADDR_HSIZE_SHIFT);
+}
+
 /* Private helper to extract ipv4 address and stash them in
  * the protocol structure.
  */
 static void sctp_v4_copy_addrlist(struct list_head *addrlist,
 				  struct net_device *dev)
 {
+	struct sctp_sockaddr_entry *addr;
 	struct in_device *in_dev;
 	struct in_ifaddr *ifa;
-	struct sctp_sockaddr_entry *addr;
+	u32 h;
 
 	rcu_read_lock();
 	if ((in_dev = __in_dev_get_rcu(dev)) == NULL) {
@@ -85,11 +90,12 @@ static void sctp_v4_copy_addrlist(struct list_head *addrlist,
 		/* Add the address to the local list.  */
 		addr = kzalloc(sizeof(*addr), GFP_ATOMIC);
 		if (addr) {
+			h = hash_sctp_sockaddr_entry_ipv4(ifa->ifa_local, in_dev->dev->ifindex);
 			addr->a.v4.sin_family = AF_INET;
 			addr->a.v4.sin_addr.s_addr = ifa->ifa_local;
 			addr->valid = 1;
 			INIT_LIST_HEAD(&addr->list);
-			list_add_tail(&addr->list, addrlist);
+			list_add_tail(&addr->list, &addrlist[h]);
 		}
 	}
 
@@ -109,7 +115,7 @@ static void sctp_get_local_addr_list(struct net *net)
 	for_each_netdev_rcu(net, dev) {
 		list_for_each(pos, &sctp_address_families) {
 			af = list_entry(pos, struct sctp_af, list);
-			af->copy_addrlist(&net->sctp.local_addr_list, dev);
+			af->copy_addrlist(net->sctp.local_addr_list, dev);
 		}
 	}
 	rcu_read_unlock();
@@ -120,8 +126,10 @@ static void sctp_free_local_addr_list(struct net *net)
 {
 	struct sctp_sockaddr_entry *addr;
 	struct list_head *pos, *temp;
+	int h;
 
-	list_for_each_safe(pos, temp, &net->sctp.local_addr_list) {
+	for (h = 0; h < SCTP_ADDR_HSIZE; h++)
+	list_for_each_safe(pos, temp, &net->sctp.local_addr_list[h]) {
 		addr = list_entry(pos, struct sctp_sockaddr_entry, list);
 		list_del(pos);
 		kfree(addr);
@@ -135,9 +143,11 @@ int sctp_copy_local_addr_list(struct net *net, struct sctp_bind_addr *bp,
 	struct sctp_sockaddr_entry *addr;
 	union sctp_addr laddr;
 	int error = 0;
+	int h;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list, list) {
+	for (h = 0; h < SCTP_ADDR_HSIZE; h++)
+	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list[h], list) {
 		if (!addr->valid)
 			continue;
 		if (!sctp_in_scope(net, &addr->a, scope))
@@ -800,6 +810,9 @@ static int sctp_inetaddr_event(struct notifier_block *this, unsigned long ev,
 	struct sctp_sockaddr_entry *temp;
 	struct net *net = dev_net(ifa->ifa_dev->dev);
 	int found = 0;
+	u32 h;
+
+	h = hash_sctp_sockaddr_entry_ipv4(ifa->ifa_local, ifa->ifa_dev->dev->ifindex);
 
 	switch (ev) {
 	case NETDEV_UP:
@@ -809,7 +822,7 @@ static int sctp_inetaddr_event(struct notifier_block *this, unsigned long ev,
 			addr->a.v4.sin_addr.s_addr = ifa->ifa_local;
 			addr->valid = 1;
 			spin_lock_bh(&net->sctp.local_addr_lock);
-			list_add_tail_rcu(&addr->list, &net->sctp.local_addr_list);
+			list_add_tail_rcu(&addr->list, &net->sctp.local_addr_list[h]);
 			sctp_addr_wq_mgmt(net, addr, SCTP_ADDR_NEW);
 			spin_unlock_bh(&net->sctp.local_addr_lock);
 		}
@@ -817,7 +830,7 @@ static int sctp_inetaddr_event(struct notifier_block *this, unsigned long ev,
 	case NETDEV_DOWN:
 		spin_lock_bh(&net->sctp.local_addr_lock);
 		list_for_each_entry_safe(addr, temp,
-					&net->sctp.local_addr_list, list) {
+					&net->sctp.local_addr_list[h], list) {
 			if (addr->a.sa.sa_family == AF_INET &&
 					addr->a.v4.sin_addr.s_addr ==
 					ifa->ifa_local) {
@@ -1309,6 +1322,7 @@ static void sctp_v4_del_protocol(void)
 static int __net_init sctp_defaults_init(struct net *net)
 {
 	int status;
+	int h;
 
 	/*
 	 * 14. Suggested SCTP Protocol Parameter Values
@@ -1427,7 +1441,8 @@ static int __net_init sctp_defaults_init(struct net *net)
 	sctp_dbg_objcnt_init(net);
 
 	/* Initialize the local address list. */
-	INIT_LIST_HEAD(&net->sctp.local_addr_list);
+	for (h = 0; h < SCTP_ADDR_HSIZE; h++)
+		INIT_LIST_HEAD(&net->sctp.local_addr_list[h]);
 	spin_lock_init(&net->sctp.local_addr_lock);
 	sctp_get_local_addr_list(net);
 

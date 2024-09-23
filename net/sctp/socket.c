@@ -6195,9 +6195,11 @@ static int sctp_copy_laddrs(struct sock *sk, __u16 port, void *to,
 	int cnt = 0;
 	int addrlen;
 	struct net *net = sock_net(sk);
+	int h;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list, list) {
+	for (h = 0; h < SCTP_ADDR_HSIZE; h++)
+	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list[h], list) {
 		if (!addr->valid)
 			continue;
 

@@ -10,6 +10,8 @@ struct proc_dir_entry;
 struct sctp_mib;
 struct ctl_table_header;
 
+#define SCTP_ADDR_HSIZE_SHIFT	8
+#define SCTP_ADDR_HSIZE		(1 << SCTP_ADDR_HSIZE_SHIFT)
 struct netns_sctp {
 	DEFINE_SNMP_STAT(struct sctp_mib, sctp_statistics);
 
@@ -39,7 +41,7 @@ struct netns_sctp {
 	 *
 	 * It is a list of sctp_sockaddr_entry.
 	 */
-	struct list_head local_addr_list;
+	struct list_head local_addr_list[SCTP_ADDR_HSIZE];
 	struct list_head addr_waitq;
 	struct timer_list addr_wq_timer;
 	struct list_head auto_asconf_splist;
