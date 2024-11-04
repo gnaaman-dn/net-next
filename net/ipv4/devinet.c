@@ -116,9 +116,6 @@ struct inet_fill_args {
 	int ifindex;
 };
 
-#define IN4_ADDR_HSIZE_SHIFT	8
-#define IN4_ADDR_HSIZE		(1U << IN4_ADDR_HSIZE_SHIFT)
-
 static u32 inet_addr_hash(const struct net *net, __be32 addr)
 {
 	u32 val = __ipv4_addr_hash(addr, net_hash_mix(net));

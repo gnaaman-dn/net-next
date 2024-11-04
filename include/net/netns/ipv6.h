@@ -10,6 +10,9 @@
 #include <net/dst_ops.h>
 #include <uapi/linux/icmpv6.h>
 
+#define IN6_ADDR_HSIZE_SHIFT	8
+#define IN6_ADDR_HSIZE		(1 << IN6_ADDR_HSIZE_SHIFT)
+
 struct ctl_table_header;
 
 struct netns_sysctl_ipv6 {

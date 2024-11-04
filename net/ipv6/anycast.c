@@ -40,8 +40,6 @@
 
 #include <net/checksum.h>
 
-#define IN6_ADDR_HSIZE_SHIFT	8
-#define IN6_ADDR_HSIZE		BIT(IN6_ADDR_HSIZE_SHIFT)
 /*	anycast address hash table
  */
 static struct hlist_head inet6_acaddr_lst[IN6_ADDR_HSIZE];

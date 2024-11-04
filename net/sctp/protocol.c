@@ -129,47 +129,93 @@ static void sctp_free_local_addr_list(struct net *net)
 	}
 }
 
+static int sctp_copy_local_ipv4_addrs(struct net *net, struct sctp_bind_addr *bp,
+			      enum sctp_scope scope)
+{
+	struct in_ifaddr *ifa;
+	union sctp_addr laddr;
+	int error = 0;
+	int i;
+
+	laddr.v4.sin_family = AF_INET;
+
+	for (i = 0; i < IN4_ADDR_HSIZE; i++) {
+		hlist_for_each_entry_rcu(ifa, &net->ipv4.inet_addr_lst[i], addr_lst) {
+			laddr.v4.sin_addr.s_addr = ifa->ifa_local;
+			laddr.v4.sin_port = htons(bp->port);
+			if (!sctp_in_scope(net, &laddr, scope))
+				continue;
+			if (sctp_bind_addr_state(bp, &laddr) != -1)
+				continue;
+
+			error = sctp_add_bind_addr(bp, &laddr, sizeof(laddr),
+						SCTP_ADDR_SRC, GFP_ATOMIC);
+			if (error)
+				break;
+		}
+	}
+	return error;
+}
+
+#if IS_ENABLED(CONFIG_IPV6)
+static int sctp_copy_local_ipv6_addrs(struct net *net, struct sctp_bind_addr *bp,
+			      enum sctp_scope scope)
+{
+	struct inet6_ifaddr *ifa;
+	union sctp_addr laddr;
+	int error = 0;
+	int i;
+
+	laddr.v4.sin_family = AF_INET6;
+
+	for (i = 0; i < IN6_ADDR_HSIZE; i++) {
+		hlist_for_each_entry_rcu(ifa, &net->ipv6.inet6_addr_lst[i], addr_lst) {
+			laddr.v6.sin6_addr = ifa->addr;
+			laddr.v6.sin6_scope_id = ifa->idev->dev->ifindex;
+			laddr.v6.sin6_port = htons(bp->port);
+
+			if (!sctp_in_scope(net, &laddr, scope))
+				continue;
+			if (sctp_bind_addr_state(bp, &laddr) != -1)
+				continue;
+
+			error = sctp_add_bind_addr(bp, &laddr, sizeof(laddr),
+						SCTP_ADDR_SRC, GFP_ATOMIC);
+			if (error)
+				break;
+		}
+	}
+	return error;
+}
+#endif
+
 /* Copy the local addresses which are valid for 'scope' into 'bp'.  */
 int sctp_copy_local_addr_list(struct net *net, struct sctp_bind_addr *bp,
 			      enum sctp_scope scope, gfp_t gfp, int copy_flags)
 {
-	struct sctp_sockaddr_entry *addr;
-	union sctp_addr laddr;
-	int error = 0;
+	int error;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list, list) {
-		if (!addr->valid)
-			continue;
-		if (!sctp_in_scope(net, &addr->a, scope))
-			continue;
 
-		/* Now that the address is in scope, check to see if
-		 * the address type is really supported by the local
-		 * sock as well as the remote peer.
-		 */
-		if (addr->a.sa.sa_family == AF_INET &&
-		    (!(copy_flags & SCTP_ADDR4_ALLOWED) ||
-		     !(copy_flags & SCTP_ADDR4_PEERSUPP)))
-			continue;
-		if (addr->a.sa.sa_family == AF_INET6 &&
-		    (!(copy_flags & SCTP_ADDR6_ALLOWED) ||
-		     !(copy_flags & SCTP_ADDR6_PEERSUPP)))
-			continue;
-
-		laddr = addr->a;
-		/* also works for setting ipv6 address port */
-		laddr.v4.sin_port = htons(bp->port);
-		if (sctp_bind_addr_state(bp, &laddr) != -1)
-			continue;
-
-		error = sctp_add_bind_addr(bp, &addr->a, sizeof(addr->a),
-					   SCTP_ADDR_SRC, GFP_ATOMIC);
+	if ((copy_flags & SCTP_ADDR4_ALLOWED) &&
+	    (copy_flags & SCTP_ADDR4_PEERSUPP)) {
+		error = sctp_copy_local_ipv4_addrs(net, bp, scope);
 		if (error)
-			break;
+			goto unlock;
 	}
 
+#if IS_ENABLED(CONFIG_IPV6)
+	if ((copy_flags & SCTP_ADDR6_ALLOWED) &&
+	    (copy_flags & SCTP_ADDR6_PEERSUPP)) {
+		error = sctp_copy_local_ipv6_addrs(net, bp, scope);
+		if (error)
+			goto unlock;
+	}
+#endif
+
+unlock:
 	rcu_read_unlock();
+
 	return error;
 }
 

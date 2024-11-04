@@ -12,6 +12,9 @@
 #include <linux/seqlock.h>
 #include <linux/siphash.h>
 
+#define IN4_ADDR_HSIZE_SHIFT	8
+#define IN4_ADDR_HSIZE		(1U << IN4_ADDR_HSIZE_SHIFT)
+
 struct ctl_table_header;
 struct ipv4_devconf;
 struct fib_rules_ops;
