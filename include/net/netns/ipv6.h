@@ -13,6 +13,24 @@
 #define IN6_ADDR_HSIZE_SHIFT	8
 #define IN6_ADDR_HSIZE		(1 << IN6_ADDR_HSIZE_SHIFT)
 
+#define _if6addr_entry_first(head) \
+	hlist_entry_safe(rcu_dereference_raw(hlist_first_rcu(head)), struct inet6_ifaddr, addr_lst)
+#define _if6addr_entry_next(node) \
+	hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&(node)->addr_lst))), struct inet6_ifaddr, addr_lst)
+
+#define for_each_inet6_addr_rcu(idx, ifa, net) for (				\
+	idx = 0,								\
+	ifa = hlist_first_rcu(&(net)->ipv6.inet6_addr_lst[idx]);		\
+										\
+	idx < IN6_ADDR_HSIZE;							\
+										\
+	ifa = (ifa && ifa->addr_lst.next)					\
+	       ? _if6addr_entry_next(&(ifa)->addr_lst)				\
+	       : (++idx < IN6_ADDR_HSIZE 					\
+		  ? _if6addr_entry_first(&(net)->ipv6.inet6_addr_lst[idx))	\
+		  : NULL) 							\
+) if (ifa)
+
 struct ctl_table_header;
 
 struct netns_sysctl_ipv6 {

@@ -15,6 +15,25 @@
 #define IN4_ADDR_HSIZE_SHIFT	8
 #define IN4_ADDR_HSIZE		(1U << IN4_ADDR_HSIZE_SHIFT)
 
+#define _ifaddr_entry_first(head) \
+	hlist_entry_safe(rcu_dereference_raw(hlist_first_rcu(head)), struct in_ifaddr, addr_lst)
+#define _ifaddr_entry_next(node) \
+	hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&(node)->addr_lst))), struct in_ifaddr, addr_lst)
+
+#define for_each_inet_addr_rcu(idx, ifa, net) for (				\
+	idx = 0,								\
+	ifa = _ifaddr_entry_first(&(net)->ipv4.inet_addr_lst[idx]);		\
+										\
+	idx < IN4_ADDR_HSIZE;							\
+										\
+	ifa = (ifa && ifa->addr_lst.next)					\
+	       ? _ifaddr_entry_next(&(ifa)->addr_lst)				\
+	       : (++idx < IN4_ADDR_HSIZE 					\
+		  ? _ifaddr_entry_first(&(net)->ipv4.inet_addr_lst[idx])	\
+		  : NULL) 							\
+) if (ifa)
+
+
 struct ctl_table_header;
 struct ipv4_devconf;
 struct fib_rules_ops;

@@ -52,6 +52,7 @@
 #include <linux/file.h>
 #include <linux/compat.h>
 #include <linux/rhashtable.h>
+#include <linux/inetdevice.h>
 
 #include <net/ip.h>
 #include <net/icmp.h>
@@ -6193,44 +6194,74 @@ static int sctp_getsockopt_peer_addrs(struct sock *sk, int len,
 	return 0;
 }
 
+static int sctp_write_laddr_to_buf(struct sock *sk,
+				   struct sctp_pf *pf, void **to,
+				   size_t *space_left, int *bytes_copied,
+				   union sctp_addr *addr)
+{
+	int addrlen = pf->addr_to_user(sctp_sk(sk), addr);
+
+	if (*space_left < addrlen) {
+		return -ENOMEM;
+	}
+	memcpy(*to, addr, addrlen);
+
+	*to += addrlen;
+	*space_left -= addrlen;
+	*bytes_copied += addrlen;
+	return 0;
+}
+
 static int sctp_copy_laddrs(struct sock *sk, __u16 port, void *to,
 			    size_t space_left, int *bytes_copied)
 {
-	struct sctp_sockaddr_entry *addr;
-	union sctp_addr temp;
-	int cnt = 0;
-	int addrlen;
 	struct net *net = sock_net(sk);
+	union sctp_addr temp;
+	struct sctp_pf *pf;
+	int cnt = 0;
+	int err;
+	int i;
+
+	pf = sctp_get_pf_specific(sk->sk_family);
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(addr, &net->sctp.local_addr_list, list) {
-		if (!addr->valid)
-			continue;
+	if (sk->sk_family == PF_INET || !inet_v6_ipv6only(sk)) {
+		struct in_ifaddr *ifa;
 
-		if ((PF_INET == sk->sk_family) &&
-		    (AF_INET6 == addr->a.sa.sa_family))
-			continue;
-		if ((PF_INET6 == sk->sk_family) &&
-		    inet_v6_ipv6only(sk) &&
-		    (AF_INET == addr->a.sa.sa_family))
-			continue;
-		memcpy(&temp, &addr->a, sizeof(temp));
-		if (!temp.v4.sin_port)
-			temp.v4.sin_port = htons(port);
+		temp.v4.sin_family = AF_INET;
+		temp.v4.sin_port = htons(port);
 
-		addrlen = sctp_get_pf_specific(sk->sk_family)
-			      ->addr_to_user(sctp_sk(sk), &temp);
+		for_each_inet_addr_rcu(i, ifa, net) {
+			temp.v4.sin_addr.s_addr = ifa->ifa_local;
 
-		if (space_left < addrlen) {
-			cnt =  -ENOMEM;
-			break;
+			err = sctp_write_laddr_to_buf(sk, pf, &to, &space_left, bytes_copied, &temp);
+			if (err) {
+				cnt = err;
+				break;
+			}
+
+			cnt++;
 		}
-		memcpy(to, &temp, addrlen);
+	}
 
-		to += addrlen;
-		cnt++;
-		space_left -= addrlen;
-		*bytes_copied += addrlen;
+	if (sk->sk_family == PF_INET6) {
+		struct inet6_ifaddr *ifa;
+
+		temp.v6.sin6_family = AF_INET6;
+		temp.v6.sin6_port = htons(port);
+
+		for_each_inet6_addr_rcu(i, ifa, net) {
+			temp.v6.sin6_addr = ifa->addr;
+			temp.v6.sin6_scope_id = ifa->idev->dev->ifindex;
+			
+			err = sctp_write_laddr_to_buf(sk, pf, &to, &space_left, bytes_copied, &temp);
+			if (err) {
+				cnt = err;
+				break;
+			}
+
+			cnt++;
+		}
 	}
 	rcu_read_unlock();
 

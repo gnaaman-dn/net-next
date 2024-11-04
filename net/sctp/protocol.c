@@ -97,38 +97,6 @@ static void sctp_v4_copy_addrlist(struct list_head *addrlist,
 	rcu_read_unlock();
 }
 
-/* Extract our IP addresses from the system and stash them in the
- * protocol structure.
- */
-static void sctp_get_local_addr_list(struct net *net)
-{
-	struct net_device *dev;
-	struct list_head *pos;
-	struct sctp_af *af;
-
-	rcu_read_lock();
-	for_each_netdev_rcu(net, dev) {
-		list_for_each(pos, &sctp_address_families) {
-			af = list_entry(pos, struct sctp_af, list);
-			af->copy_addrlist(&net->sctp.local_addr_list, dev);
-		}
-	}
-	rcu_read_unlock();
-}
-
-/* Free the existing local addresses.  */
-static void sctp_free_local_addr_list(struct net *net)
-{
-	struct sctp_sockaddr_entry *addr;
-	struct list_head *pos, *temp;
-
-	list_for_each_safe(pos, temp, &net->sctp.local_addr_list) {
-		addr = list_entry(pos, struct sctp_sockaddr_entry, list);
-		list_del(pos);
-		kfree(addr);
-	}
-}
-
 static int sctp_copy_local_ipv4_addrs(struct net *net, struct sctp_bind_addr *bp,
 			      enum sctp_scope scope)
 {
@@ -139,20 +107,18 @@ static int sctp_copy_local_ipv4_addrs(struct net *net, struct sctp_bind_addr *bp
 
 	laddr.v4.sin_family = AF_INET;
 
-	for (i = 0; i < IN4_ADDR_HSIZE; i++) {
-		hlist_for_each_entry_rcu(ifa, &net->ipv4.inet_addr_lst[i], addr_lst) {
-			laddr.v4.sin_addr.s_addr = ifa->ifa_local;
-			laddr.v4.sin_port = htons(bp->port);
-			if (!sctp_in_scope(net, &laddr, scope))
-				continue;
-			if (sctp_bind_addr_state(bp, &laddr) != -1)
-				continue;
+	for_each_inet_addr_rcu(i, ifa, net) {
+		laddr.v4.sin_addr.s_addr = ifa->ifa_local;
+		laddr.v4.sin_port = htons(bp->port);
+		if (!sctp_in_scope(net, &laddr, scope))
+			continue;
+		if (sctp_bind_addr_state(bp, &laddr) != -1)
+			continue;
 
-			error = sctp_add_bind_addr(bp, &laddr, sizeof(laddr),
-						SCTP_ADDR_SRC, GFP_ATOMIC);
-			if (error)
-				break;
-		}
+		error = sctp_add_bind_addr(bp, &laddr, sizeof(laddr),
+					SCTP_ADDR_SRC, GFP_ATOMIC);
+		if (error)
+			break;
 	}
 	return error;
 }
@@ -168,22 +134,20 @@ static int sctp_copy_local_ipv6_addrs(struct net *net, struct sctp_bind_addr *bp
 
 	laddr.v4.sin_family = AF_INET6;
 
-	for (i = 0; i < IN6_ADDR_HSIZE; i++) {
-		hlist_for_each_entry_rcu(ifa, &net->ipv6.inet6_addr_lst[i], addr_lst) {
-			laddr.v6.sin6_addr = ifa->addr;
-			laddr.v6.sin6_scope_id = ifa->idev->dev->ifindex;
-			laddr.v6.sin6_port = htons(bp->port);
+	for_each_inet6_addr_rcu(i, ifa, net) {
+		laddr.v6.sin6_addr = ifa->addr;
+		laddr.v6.sin6_scope_id = ifa->idev->dev->ifindex;
+		laddr.v6.sin6_port = htons(bp->port);
 
-			if (!sctp_in_scope(net, &laddr, scope))
-				continue;
-			if (sctp_bind_addr_state(bp, &laddr) != -1)
-				continue;
+		if (!sctp_in_scope(net, &laddr, scope))
+			continue;
+		if (sctp_bind_addr_state(bp, &laddr) != -1)
+			continue;
 
-			error = sctp_add_bind_addr(bp, &laddr, sizeof(laddr),
-						SCTP_ADDR_SRC, GFP_ATOMIC);
-			if (error)
-				break;
-		}
+		error = sctp_add_bind_addr(bp, &laddr, sizeof(laddr),
+					SCTP_ADDR_SRC, GFP_ATOMIC);
+		if (error)
+			break;
 	}
 	return error;
 }
@@ -829,41 +793,19 @@ static int sctp_inetaddr_event(struct notifier_block *this, unsigned long ev,
 			       void *ptr)
 {
 	struct in_ifaddr *ifa = (struct in_ifaddr *)ptr;
-	struct sctp_sockaddr_entry *addr = NULL;
-	struct sctp_sockaddr_entry *temp;
 	struct net *net = dev_net(ifa->ifa_dev->dev);
-	int found = 0;
+	struct sctp_sockaddr_entry addr;
+
+	addr.a.v4.sin_family = AF_INET;
+	addr.a.v4.sin_addr.s_addr = ifa->ifa_local;
+	addr.valid = 1;
 
 	switch (ev) {
 	case NETDEV_UP:
-		addr = kzalloc(sizeof(*addr), GFP_ATOMIC);
-		if (addr) {
-			addr->a.v4.sin_family = AF_INET;
-			addr->a.v4.sin_addr.s_addr = ifa->ifa_local;
-			addr->valid = 1;
-			spin_lock_bh(&net->sctp.local_addr_lock);
-			list_add_tail_rcu(&addr->list, &net->sctp.local_addr_list);
-			sctp_addr_wq_mgmt(net, addr, SCTP_ADDR_NEW);
-			spin_unlock_bh(&net->sctp.local_addr_lock);
-		}
+		sctp_addr_wq_mgmt(net, &addr, SCTP_ADDR_NEW);
 		break;
 	case NETDEV_DOWN:
-		spin_lock_bh(&net->sctp.local_addr_lock);
-		list_for_each_entry_safe(addr, temp,
-					&net->sctp.local_addr_list, list) {
-			if (addr->a.sa.sa_family == AF_INET &&
-					addr->a.v4.sin_addr.s_addr ==
-					ifa->ifa_local) {
-				sctp_addr_wq_mgmt(net, addr, SCTP_ADDR_DEL);
-				found = 1;
-				addr->valid = 0;
-				list_del_rcu(&addr->list);
-				break;
-			}
-		}
-		spin_unlock_bh(&net->sctp.local_addr_lock);
-		if (found)
-			kfree_rcu(addr, rcu);
+		sctp_addr_wq_mgmt(net, &addr, SCTP_ADDR_DEL);
 		break;
 	}
 
@@ -1459,11 +1401,6 @@ static int __net_init sctp_defaults_init(struct net *net)
 
 	sctp_dbg_objcnt_init(net);
 
-	/* Initialize the local address list. */
-	INIT_LIST_HEAD(&net->sctp.local_addr_list);
-	spin_lock_init(&net->sctp.local_addr_lock);
-	sctp_get_local_addr_list(net);
-
 	/* Initialize the address event list */
 	INIT_LIST_HEAD(&net->sctp.addr_waitq);
 	INIT_LIST_HEAD(&net->sctp.auto_asconf_splist);
@@ -1487,7 +1424,6 @@ static void __net_exit sctp_defaults_exit(struct net *net)
 {
 	/* Free the local address list */
 	sctp_free_addr_wq(net);
-	sctp_free_local_addr_list(net);
 
 #ifdef CONFIG_PROC_FS
 	remove_proc_subtree("sctp", net->proc_net);
